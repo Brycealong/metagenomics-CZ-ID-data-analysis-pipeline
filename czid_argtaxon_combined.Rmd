@@ -1,0 +1,848 @@
+---
+title: "czid_argtaxon_combined"
+output: html_document
+date: "2026-01-29"
+---
+
+# ARG Analysis
+
+```{r}
+if(!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("Maaslin2")
+```
+
+```{r echo=FALSE}
+library(Maaslin2)
+library(ggplot2)
+library(tidyverse)
+library(scales)
+```
+
+```{r}
+ARG_combined_amr <- read.csv("combined_amr_results.csv", header = TRUE)
+```
+
+```{r}
+ARG_combined_amr_filtered <- ARG_combined_amr %>%
+  filter(read_coverage_breadth > 5) %>%
+  mutate(sample_name = paste0("S", str_extract(sample_name, "^\\d+")))
+
+# counts <- combined_amr_filtered %>%
+#   pivot_wider(names_from = sample_name,
+#               values_from = dpm,
+#               values_fill = 0) %>%
+#   column_to_rownames("gene_name")
+# counts # there's 127 genes in total
+```
+
+```{r}
+metadata <- read.csv("sample_metadata.csv", header = TRUE)
+# metadata <- metadata %>% column_to_rownames("sample_name")
+head(metadata)
+```
+
+```{r}
+metadata$cond_tp <- paste(metadata$diseases_and_conditions, metadata$time_point, sep = "_")
+metadata$sex_cond <- paste(metadata$host_sex, metadata$diseases_and_conditions, sep="_")
+metadata$sex_cond_tp <- paste(metadata$host_sex, metadata$diseases_and_conditions, 
+                              metadata$time_point, sep="_")
+```
+
+```{r}
+####ARG Total Abundance####
+combined_amr_filtered_meta <- combined_amr_filtered %>% left_join(metadata)
+
+sample_abundance <- combined_amr_filtered_meta %>%
+  group_by(sample_name, host_sex, diseases_and_conditions, time_point) %>%
+  summarise(arg_total_dpm = sum(dpm, na.rm = TRUE), .groups = "drop") %>%
+  mutate(time_point = factor(time_point))
+
+ggplot(sample_abundance,
+       aes(x = time_point, y = arg_total_dpm, fill = diseases_and_conditions)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75),
+    alpha = 0.6,
+    size = 2
+  ) +
+  facet_wrap(~ host_sex) +
+  theme_bw() +
+  labs(
+    title = "Total ARG abundance by time point",
+    x = "Time Point",
+    y = "Total ARG abundance (dpm)",
+    fill = "Treatment"
+  )
+
+# ggsave("total_abundance.png",dpi=300,scale=2)
+
+
+```
+
+```{r}
+####ARG Richness####
+
+sample_richness <- combined_amr_filtered_meta %>%
+  group_by(sample_name, host_sex, diseases_and_conditions, time_point) %>%
+  summarise(arg_richness = n_distinct(gene_name[dpm > 0]), .groups = "drop") %>%
+  mutate(time_point = factor(time_point))
+
+ggplot(sample_richness,
+       aes(x = time_point, y = arg_richness, fill = diseases_and_conditions)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(
+    position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.75),
+    alpha = 0.6,
+    size = 2
+  ) +
+  facet_wrap(~ host_sex) +
+  theme_bw() +
+  labs(
+    title = "ARG richness by time point",
+    x = "Time Point",
+    y = "ARG richness (number of ARG genes)",
+    fill = "Treatment"
+  )
+
+ggsave("richness.png",dpi=300,scale=2)
+```
+
+```{r}
+arrange(combined_amr_filtered_meta, desc(dpm))
+```
+
+
+```{r}
+# rel_Counts <- apply(Counts, MARGIN = 2, function(x) x / sum(x) * 100)
+# rel_Counts <- as.data.frame(rel_Counts)
+# rel_Counts <- rel_Counts[which(rowSums(rel_Counts) > 20),]
+# calculate relative abundance
+counts_relative <- counts %>%
+  mutate(across(everything(), ~ . / sum(.) * 100))
+# counts_relative <- col
+counts_relative
+```
+
+create a heatmap.
+
+```{r}
+# install.packages("pheatmap")
+ 
+# load package
+library(pheatmap)
+```
+
+```{r, fig.width=12, fig.height=14}
+# na_count <- rowSums(is.na(relative_abundance))
+# relative_abundance_filtered <- relative_abundance[na_count <= 10, ]
+pheatmap(rel_Counts,
+         na_col = "grey60",
+         cluster_rows = F,
+         cluster_cols = F)
+```
+
+
+
+```{r, fig.width=20, fig.height=8}
+
+counts_relative_longer <- counts_relative[rowSums(counts_relative == 0)<40,] |>
+  pivot_longer(!gene_name, names_to = "sample_name", values_to = "count")
+counts_relative_longer <- left_join(counts_relative_longer, metadata, by = "sample_name") |>
+  arrange(diseases_and_conditions, time_point, host_sex, replicate) |>
+  mutate(sample_name = factor(sample_name, levels = unique(sample_name)))
+s <- ggplot(counts_relative_longer, aes(x = sample_name, y = count, fill = factor(gene_name)))
+# s + geom_bar(position = "fill")
+# s + geom_col(position = "fill") +
+#   facet_grid(~diseases_and_conditions, scales = "free_x")
+
+s + geom_col(position = "fill") +
+  facet_grid(~cond_tp, scales = "free_x")
+
+ggsave("2.tiff", width = 20, height = 8, dpi = 600)
+# +
+#   labs(y = "Relative Abundance (%)", 
+#        x = "Sample",
+#        fill = "Taxa") +
+#   theme_minimal()
+# combined_reads_relative_longer
+```
+
+## Perform and plot PCA data
+```{r}
+counts_relative_t <- as.data.frame(t(counts_relative))
+colnames(counts_relative_t)[1:4]
+```
+```{r}
+pca <- prcomp(counts_relative_t, scale = FALSE)
+```
+
+```{r}
+#get structure of df
+str(pca)
+```
+```{r}
+#Build a data frame
+pcaData <- as.data.frame(pca$x[, 1:2]) # extract first two PCs
+pcaData <- cbind(pcaData, metadata$host_sex, metadata$diseases_and_conditions, metadata$time_point) # add species to df
+colnames(pcaData) <- c("PC1", "PC2", "host_sex", "treatment", "tp") # change column names
+
+#Plot
+ggplot(pcaData) +
+  aes(PC1, PC2, color = host_sex, shape = treatment) + # define plot area
+  facet_wrap(~tp) +
+  geom_point(size = 2) + # adding data points
+  coord_fixed() # fixing coordinates
+
+ggsave("pca.png",height=5,width=4.25,dpi=300,units="in",scale=2)
+
+```
+
+
+```{r}
+####ARG Class Relabeling####
+#Filter by high level drug class
+#Pull out names and number of uniquely named high level drug classes
+length(unique(combined_amr_filtered_meta$high_level_drug_class))
+```
+
+```{r}
+#Add new columns for each class of unique high-level drug classes
+ARG_combined_amr_filtered_classes <- ARG_combined_amr_filtered %>%
+  mutate(defined_drug_class = case_when(
+    grepl("aminoglycoside", high_level_drug_class) ~ "aminoglycoside",
+    grepl("diaminopyrimidine antibiotic", high_level_drug_class) ~ "diaminopyrimidine",
+    grepl("beta-lactam", high_level_drug_class) ~ "beta-lactam",
+    grepl("fluoroquinolone antibiotic", high_level_drug_class) ~ "fluoroquinolone",
+    grepl("glycopeptide antibiotic", high_level_drug_class) ~ "glycopeptide",
+    grepl("lincosamide|macrolide antibiotic|streptogramin", high_level_drug_class) ~ "MLS",
+    grepl("nitroimidazole antibiotic", high_level_drug_class) ~ "nitroimidazole",
+    grepl("mupirocin-like antibiotic", high_level_drug_class) ~ "mupirocin-like",
+    grepl("peptide antibiotic", high_level_drug_class) ~ "peptide",
+    grepl("phenicol antibiotic", high_level_drug_class) ~ "phenicol",
+    grepl("phosphonic acid antibiotic", high_level_drug_class) ~ "phosphonic acid",
+    grepl("rifamycin", high_level_drug_class) ~ "rifamycin",
+    grepl("sulfonamide", high_level_drug_class) ~ "sulfonamide",
+    grepl("tetracycline antibiotic", high_level_drug_class) ~ "tetracycline",
+    # grepl("disinfecting agents and antiseptics|aminocoumarin antibiotic|nucleoside antibiotic", high_level_drug_class) ~ "Oth",
+    TRUE ~ "other"  # For any unmatched cases
+  ))
+
+# #Add new columns for each class of unique high-level drug classes
+# combined_amr_filtered_classes <- combined_amr_filtered %>%
+#   mutate(defined_drug_class = case_when(
+#     grepl("aminoglycoside", high_level_drug_class) ~ "AGly",
+#     grepl("diaminopyrimidine antibiotic", high_level_drug_class) ~ "Dap",
+#     grepl("beta-lactam", high_level_drug_class) ~ "Bla",
+#     grepl("fluoroquinolone antibiotic", high_level_drug_class) ~ "Flq",
+#     grepl("glycopeptide antibiotic", high_level_drug_class) ~ "Gly",
+#     grepl("lincosamide|macrolide antibiotic|streptogramin", high_level_drug_class) ~ "Mls",
+#     grepl("nitroimidazole antibiotic", high_level_drug_class) ~ "NI",
+#     grepl("mupirocin-like antibiotic", high_level_drug_class) ~ "MLA",
+#     grepl("peptide antibiotic", high_level_drug_class) ~ "Pep",
+#     grepl("phenicol antibiotic", high_level_drug_class) ~ "Phe",
+#     grepl("phosphonic acid antibiotic", high_level_drug_class) ~ "PsA",
+#     grepl("rifamycin", high_level_drug_class) ~ "Rif",
+#     grepl("sulfonamide", high_level_drug_class) ~ "Sulf",
+#     grepl("tetracycline antibiotic", high_level_drug_class) ~ "Tet",
+#     # grepl("disinfecting agents and antiseptics|aminocoumarin antibiotic|nucleoside antibiotic", high_level_drug_class) ~ "Oth",
+#     TRUE ~ "Oth"  # For any unmatched cases
+#   ))
+# combined_amr_filtered_classes <- combined_amr_filtered %>%
+#   mutate(amr_AGly = case_when(grepl("aminoglycoside", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Dap = case_when(grepl("diaminopyrimidine antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Bla = case_when(grepl("beta-lactam", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Flq = case_when(grepl("fluoroquinolone antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Gly = case_when(grepl("glycopeptide antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0), #vanco, dapto, polymyxin
+#          amr_Mls = case_when(grepl("lincosamide|macrolide antibiotic|streptogramin", high_level_drug_class) ~ 1, TRUE ~ 0), #clindamycin, macrolides
+#          amr_NI = case_when(grepl("nitroimidazole antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_MLA = case_when(grepl("mupirocin-like antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Pep = case_when(grepl("peptide antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0), #vanco, dapto, polymyxin
+#          amr_Phe = case_when(grepl("phenicol antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_PsA = case_when(grepl("phosphonic acid antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Rif = case_when(grepl("rifamycin", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Sulf = case_when(grepl("sulfonamide", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Tet = case_when(grepl("tetracycline antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0),
+#          amr_Oth = case_when(grepl("disinfecting agents and antiseptics|aminocoumarin antibiotic|nucleoside antibiotic", high_level_drug_class) ~ 1, TRUE ~ 0))
+
+```
+
+```{r}
+####Sum Up ARGs within New Groups####
+
+# 1) Summing abundance (dpm)
+ARG_sample_classes_abundance <- ARG_combined_amr_filtered_classes %>%
+  group_by(sample_name, defined_drug_class) %>%
+  summarise(drug_class_total_dpm = sum(dpm, na.rm = TRUE), .groups = "drop") 
+# %>%
+#   mutate(time_point = factor(time_point))
+
+# 2) Relative Abundance
+ARG_sample_classes_relative_abundance <- ARG_sample_classes_abundance %>%
+  group_by(sample_name) %>%
+  mutate(drug_class_relative_abundance = drug_class_total_dpm / sum(drug_class_total_dpm)) %>%
+  ungroup()
+
+```
+
+```{r}
+####Relative Abundance Plot####
+sample_classes_relative_abundance_meta <- sample_classes_relative_abundance %>%
+  left_join(metadata %>%
+              arrange(diseases_and_conditions, time_point, host_sex, replicate) %>%
+              mutate(x = row_number())) %>%
+  mutate(host_sex = case_when(
+    host_sex == "Female" ~ "F",
+    host_sex == "Male" ~ "M"
+  ))
+
+# Create a named vector for renaming
+class_labels <- c(
+  "AGly" = "aminoglycoside",
+  "Dap"  = "diaminopyrimidine",
+  "Bla"  = "beta-lactam",
+  "Flq"  = "fluoroquinolone",
+  "Gly"  = "glycopeptide",
+  "Mls"  = "MLS",
+  "NI"   = "nitroimidazole",
+  "MLA"  = "mupirocin-like",
+  "Pep"  = "peptide",
+  "Phe"  = "phenicol",
+  "PsA"  = "phosphonic acid",
+  "Rif"  = "rifamycin",
+  "Sulf" = "sulfonamide",
+  "Tet"  = "tetracycline",
+  "Oth"  = "other"
+)
+
+# Apply to your data and set factor levels (with "other" first so it's at bottom of stacked bars)
+sample_classes_relative_abundance_meta <- sample_classes_relative_abundance_meta %>%
+  mutate(
+    defined_drug_class_label = class_labels[defined_drug_class],
+    defined_drug_class_label = factor(
+      defined_drug_class_label,
+      levels = c(setdiff(unique(class_labels), "other"), "other")
+    )
+  )
+  
+time_spans <- sample_classes_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+sex_spans <- sample_classes_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point, host_sex) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+# --- Color palette for drug classes ---
+all_classes <- levels(sample_classes_relative_abundance_meta$defined_drug_class_label)
+pal <- setNames(hue_pal()(length(all_classes)), all_classes)
+
+# Override specific colors
+pal["tetracycline"] <- "red3"
+pal["beta-lactam"] <- "yellow2"
+pal["aminoglycoside"] <- "blue"
+pal["MLS"] <- "darkgreen"
+pal["glycopeptide"] <- "purple4"
+pal["rifamycin"] <- "orange"
+pal["other"] <- "grey70"
+
+ggplot(sample_classes_relative_abundance_meta, 
+       aes(x = x, y = drug_class_relative_abundance, fill = defined_drug_class_label)) +
+  geom_col() +
+  facet_grid(~ diseases_and_conditions, scales = "free_x") +
+  # hide x tick labels but keep the axis line
+  scale_x_continuous(breaks = NULL) +
+  scale_fill_manual(values = pal) +
+  labs(x = "Age / Sex / Time Point", y = "Relative Abundance", fill = "Drug Class") +
+  theme_classic() +
+  
+  # --- Layer 1: TIME bracket + label ---
+  geom_segment(
+    data = time_spans,
+    aes(x = xmin, xend = xmax, y = -0.03, yend = -0.03),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = time_spans,
+    aes(x = xmid, y = -0.06, label = time_point),
+    inherit.aes = FALSE,
+    size = 3.5
+  ) +
+  
+  # --- Layer 2: SEX bracket + label ---
+  geom_segment(
+    data = sex_spans,
+    aes(x = xmin, xend = xmax, y = -0.09, yend = -0.09),
+    inherit.aes = FALSE,
+    linewidth = 0.6
+  ) +
+  geom_text(
+    data = sex_spans,
+    aes(x = xmid, y = -0.12, label = host_sex),
+    inherit.aes = FALSE,
+    size = 3
+  )
+
+ggsave("relative_abundance_stacked_by_class.png", width = 15, height = 8)
+```
+
+
+
+
+```{r}
+# make a function to subset the metadata
+metadata_subset <- function(col,values,metadata){
+  return(metadata %>% filter(.data[[col]] %in% values))
+}
+```
+
+```{r}
+metadata_abx_3_vs_abx_4 <- metadata %>% filter(cond_tp %in% c("abx_3", "abx_4"))
+metadata_abx_3_vs_abx_4
+```
+```{r}
+fit_data <- Maaslin2(
+  input_data = as.data.frame(t(rel_Counts)), 
+  input_metadata = metadata_subset("sex_cond_tp", c("Male_abx_3", "Male_abx_4"), metadata), 
+  output = 'male_abx_3_vs_male_abx_4_ARG_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0,
+  max_significance = 0.5,
+  fixed_effects = c("sex_cond_tp"),
+  reference=c("cond_tp,Male_abx_3"),
+  standardize = FALSE
+  )
+```
+
+```{r}
+fit_data <- Maaslin2(
+  input_data = as.data.frame(t(counts)), 
+  input_metadata = metadata_subset("sex_cond_tp", c("Female_abx_3", "Female_abx_4"), metadata), 
+  output = 'female_abx_3_vs_female_abx_4_ARG_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0,
+  max_significance = 0.5,
+  fixed_effects = c("sex_cond_tp"),
+  reference=c("cond_tp,Female_abx_3"),
+  standardize = FALSE
+  )
+```
+
+# Taxonomy Analysis
+
+Load the package from your R library. We will also go ahead and load packages from the tidyverse.
+
+```{r}
+library(tidyverse)
+```
+
+We will read the count matrix first:
+
+```{r}
+#List files 
+TAXON_files <- list.files(path="sample_taxon_reports/",pattern="*.csv")
+
+#Create a list of taxon summaries
+TAXON_taxon_read <- lapply(paste0("sample_taxon_reports/",
+                         TAXON_files), read.csv)
+
+#Automated way to assign names; modify for your purposes   
+names(TAXON_taxon_read)<- sapply(TAXON_files,
+                       function(x){paste0("S",str_split_1(x,"_")[1])},
+                       USE.NAMES = FALSE)
+
+# Combine and add sample_name column
+TAXON_combined_taxon <- bind_rows(TAXON_taxon_read, .id = "sample_name")
+```
+
+We will apply some threshold filters on the data and merge them to make a big matrix. We will use the simple threshold presented [here](https://chanzuckerberg.zendesk.com/hc/en-us/articles/360036305973-Filter-Sample-Report-Table#reduce-noise){target="_blank"}. These thresholds are useful for removing spurious matches (false-positives) or taxa that are not abundant enough to have an impact.
+
+-   Add a threshold filter of NT L alignment length \> 50bp. `nt_alignment_length > 50`
+-   Add a threshold filter of NT rPM \> 10 . `nt_rpm > 10`
+-   Add a threshold filter of NT r \> 0 and NR r \> 0 `nt_count>0 & nr_count>0`
+
+Other arguments include `tax_level` and `category`. For example, `tax_level = 1` will keep only the species level taxa, while `tax_level = 2` will keep only the genus level taxa. In this study, we are only interested in bacteria, so we will set `category = "bateria"` to filter out taxa that are not bacteria (virus for example). More information about how to filter sample report table and descriptions of different filters can be found [here](https://chanzuckerberg.zendesk.com/hc/en-us/articles/360036305973-Filter-Sample-Report-Table){target="_blank"}.
+
+```{r}
+# Filter the list of dataframes
+TAXON_combined_taxon_filtered <- TAXON_combined_taxon %>% 
+    filter(tax_level == 2) %>% # keep genera level
+    filter(category == "bacteria") %>% # keep only bacteria
+    filter(nt_rpm > 10) %>%
+    filter(nt_alignment_length > 50) %>%
+    filter(nt_count > 0) %>%
+    filter(nr_count > 0) %>%
+    select(sample_name, name, nt_rpm) # use raw nucleotide reads per million
+
+TAXON_unique_top_taxa <- TAXON_combined_taxon_filtered %>%
+  filter(!grepl("^non-", name)) %>%
+  group_by(sample_name) %>%
+  slice_max(order_by = nt_rpm, n = 5) %>%
+  ungroup() %>%
+  pull(name) %>%
+  unique()
+# # Rename all columns first
+# taxon_read_filtered_renamed <- lapply(names(taxon_read_filtered), 
+#                                       function(nm) {
+#                                         df <- taxon_read_filtered[[nm]]
+#                                         names(df)[2] <- nm  # change nt_rpm
+#                                         return(df)
+#                                       })
+# 
+# # Then merge them all
+# combined_reads <- Reduce(function(x, y) merge(x, y, by = "name", all = TRUE), taxon_read_filtered_renamed)
+
+# Set taxonomy names to rownames
+# combined_reads <- combined_reads %>% column_to_rownames("name")
+
+# # Replace NAs with 0
+# combined_reads[is.na(combined_reads)] <- 0
+
+# # Mark rows to combine
+# combined_reads$name[grepl("^non-", combined_reads$name)] <- "Others"
+# 
+# # Aggregate by name
+# combined_reads <- aggregate(. ~ name, data = combined_reads, FUN = sum)
+```
+
+Relative abundance refers to the proportion of a specific microorganism within the entire microbial community. In other words, it does not provide the actual number of microorganisms but rather indicates the proportion of that microorganism relative to the total microbial count in one sample. The sum of relative abundances typically equals 100% (or 1).
+
+```{r}
+# Relative Abundance
+TAXON_sample_relative_abundance <- TAXON_combined_taxon_filtered %>%
+  mutate(name = if_else(name %in% TAXON_unique_top_taxa, name, "Other")) %>%
+  group_by(sample_name, name) %>%
+  summarise(nt_rpm = sum(nt_rpm), .groups = "drop") %>% # sum up "Other"
+  group_by(sample_name) %>%
+  mutate(taxon_relative_abundance = nt_rpm / sum(nt_rpm)) %>%
+  ungroup()
+```
+
+read the metadata.
+```{r}
+metadata <- read.csv("sample_metadata.csv", header = TRUE)
+# metadata <- metadata %>% column_to_rownames("sample_name")
+head(metadata)
+```
+
+## Compare in vivo and in vitro
+
+```{r}
+# Filter for only T1 and T2
+TAXON_t1_t2 <- TAXON_sample_relative_abundance %>%
+  left_join(metadata, by = "sample_name") %>%
+  filter(time_point %in% c(1, 2)) %>%
+  mutate(sample_type = if_else(time_point == 1, "in_vivo", "in_vitro"))
+
+# Pivot to wide format for comparison
+TAXON_t1_t2_wide <- TAXON_t1_t2 %>%
+  select(host_sex, diseases_and_conditions, replicate, name, taxon_relative_abundance, sample_type) %>%
+  pivot_wider(names_from = sample_type, values_from = taxon_relative_abundance, values_fill = 1e-5)
+
+# Scatter plot with log10 scales
+ggplot(TAXON_t1_t2_wide, aes(x = in_vivo, y = in_vitro, fill = name)) +
+  geom_point(alpha = 0.6, size = 2, shape = 21) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  scale_x_log10(labels = scales::label_log()) +
+  scale_y_log10(labels = scales::label_log()) +
+  facet_grid(~ diseases_and_conditions) +
+  annotation_logticks() +
+  labs(x = expression(log[10]~"(rel. ab.)"~italic("in vivo")),
+       y = expression(log[10]~"(rel. ab.)"~italic("in vitro")),
+       title = "Taxonomy: in vitro (T1) vs in vivo (T2)") +
+  theme_classic()
+
+ggsave("relative_abundance_invivo_vs_invitro_taxonomy.png", width = 9, height = 4)
+```
+
+```{r}
+TAXON_sample_relative_abundance_meta <- TAXON_sample_relative_abundance %>%
+  left_join(metadata %>%
+              arrange(diseases_and_conditions, time_point, host_sex, replicate) %>%
+              mutate(x = row_number())) %>%
+  mutate(host_sex = case_when(
+    host_sex == "Female" ~ "F",
+    host_sex == "Male" ~ "M"
+  ))
+
+# Apply to your data and set factor levels (with "other" at bottom of stacked bars)
+sample_relative_abundance_meta <- sample_relative_abundance_meta %>%
+  mutate(name = factor(name, levels = c(sort(setdiff(unique(name), "Other")), "Other")))
+```
+
+
+```{r}
+time_spans <- sample_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+sex_spans <- sample_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point, host_sex) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+# --- Color palette for drug classes ---
+all_classes <- levels(sample_relative_abundance_meta$name)
+pal <- setNames(hue_pal()(length(all_classes)), all_classes)
+
+# Override specific colors
+pal["Duncaniella"] <- "red3"
+pal["Akkermansia"] <- "yellow2"
+pal["Blautia"] <- "darkblue"
+pal["Flavonifractor"] <- "lightblue"
+pal["Enterobactre"] <- "palegreen3"
+pal["Enterococcus"] <- "darkgreen"
+pal["Bifidobacterium"] <- "purple4"
+pal["Klebsiella"] <- "orange"
+pal["Lactobacillus"] <- "pink"
+pal["Other"] <- "grey70"
+
+ggplot(sample_relative_abundance_meta, 
+       aes(x = x, y = taxon_relative_abundance, fill = name)) +
+  geom_col(position = "fill") +
+  facet_grid(~ diseases_and_conditions, scales = "free_x") +
+  # hide x tick labels but keep the axis line
+  scale_x_continuous(breaks = NULL) +
+  scale_fill_manual(values = pal) +
+  labs(x = "Age / Sex / Time Point", y = "Relative Abundance", fill = "Taxonomy") +
+  theme_classic() +
+  
+  # --- Layer 1: TIME bracket + label ---
+  geom_segment(
+    data = time_spans,
+    aes(x = xmin, xend = xmax, y = -0.03, yend = -0.03),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = time_spans,
+    aes(x = xmid, y = -0.06, label = time_point),
+    inherit.aes = FALSE,
+    size = 3.5
+  ) +
+  
+  # --- Layer 2: SEX bracket + label ---
+  geom_segment(
+    data = sex_spans,
+    aes(x = xmin, xend = xmax, y = -0.09, yend = -0.09),
+    inherit.aes = FALSE,
+    linewidth = 0.6
+  ) +
+  geom_text(
+    data = sex_spans,
+    aes(x = xmid, y = -0.12, label = host_sex),
+    inherit.aes = FALSE,
+    size = 3
+  )
+
+ggsave("relative_abundance_stacked_by_taxonomy.png", width = 15, height = 8)
+```
+
+
+
+
+
+
+
+
+```{r}
+# combined_reads_relative <- apply(combined_reads, 2, function(x) x / sum(x) * 100)
+combined_reads_relative <- combined_reads %>%
+  mutate(across(-name, ~ . / sum(.) * 100))
+combined_reads_relative[rowSums(combined_reads_relative == 0)<20,]
+```
+
+create a heatmap.
+
+```{r}
+# install.packages("pheatmap")
+ 
+# load package
+# library(pheatmap)
+```
+
+```{r, fig.width=10, fig.height=12}
+# na_count <- rowSums(is.na(relative_abundance))
+# relative_abundance_filtered <- relative_abundance[na_count <= 10, ]
+# pheatmap(combined_reads_relative[rowSums(is.na(combined_reads_relative))<=30,], 
+#          na_col = "grey60", 
+#          cluster_rows = F, 
+#          cluster_cols = F)
+```
+
+| Sample | Sex    | Condition | Time Point | Replicate |
+|--------|--------|-----------|------------|-----------|
+| S25    | Female | untreated | 1          | 3         |
+| S29    | Female | abx       | 1          | 2         |
+| S34    | Male   | abx       | 1          | 2         |
+| S53    | Female | untreated | 2          | 3         |
+| S68    | Female | untreated | 3          | 3         |
+| S83    | Female | untreated | 4          | 3         |
+
+```{r, fig.width=20, fig.height=8}
+
+combined_reads_relative_longer <- combined_reads_relative[rowSums(combined_reads_relative == 0)<30,] |>
+  pivot_longer(!name, names_to = "sample_name", values_to = "count")
+combined_reads_relative_longer <- left_join(combined_reads_relative_longer, metadata, by = "sample_name") |>
+  arrange(diseases_and_conditions, time_point, host_sex, replicate) |>
+  mutate(sample_name = factor(sample_name, levels = unique(sample_name)))
+s <- ggplot(sample_relative_abundance, aes(x = sample_name, y = taxon_relative_abundance, fill = factor(name)))
+# s + geom_bar(position = "fill")
+# s + geom_col(position = "fill") +
+#   facet_grid(~diseases_and_conditions, scales = "free_x")
+
+s + geom_col(position = "fill") 
++
+  facet_grid(~cond_tp, scales = "free_x")
+  # scale_fill_manual(values = c("Others" = "gray80")) 
+
+ggsave("1.tiff", width = 20, height = 8, dpi = 600)
+
+s + geom_col(position = "fill") +
+  facet_grid(~sex_cond_replicate, scales = "free_x") +
+  guides(fill = guide_legend(ncol = 2))
+
+ggsave("3.tiff", width = 20, height = 10, dpi = 600)
+# +
+#   labs(y = "Relative Abundance (%)", 
+#        x = "Sample",
+#        fill = "Taxa") +
+#   theme_minimal()
+# combined_reads_relative_longer
+```
+
+
+
+```{r}
+metadata$cond_tp <- paste(metadata$diseases_and_conditions, metadata$time_point, sep = "_")
+metadata$sex_cond <- paste(metadata$host_sex, metadata$diseases_and_conditions, sep="_")
+metadata$sex_cond_tp <- paste(metadata$host_sex, metadata$diseases_and_conditions, 
+                              metadata$time_point, sep="_")
+metadata$sex_cond_replicate <- paste(metadata$host_sex, metadata$diseases_and_conditions, 
+                              metadata$replicate, sep="_")
+```
+
+```{r}
+# make a function to subset the metadata
+metadata_subset <- function(col,values,metadata){
+  return(metadata %>% filter(.data[[col]] %in% values))
+}
+```
+
+```{r echo=FALSE}
+fit_data <- Maaslin2(
+  input_data = as.data.frame(t(combined_reads)), 
+  input_metadata = metadata_abx_3_vs_abx_4, 
+  output = 'abx_3_vs_abx_4_taxa_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0,
+  max_significance = 0,
+  fixed_effects = c("cond_tp"),
+  reference=c("cond_tp,abx_3"),
+  standardize = FALSE
+  )
+```
+
+```{r}
+metadata_abx_1_vs_untreated_1 <- metadata %>% filter(cond_tp %in% c("abx_1", "untreated_1"))
+metadata_abx_1_vs_untreated_1
+```
+
+```{r}
+fit_data <- Maaslin2(
+  input_data = as.data.frame(t(combined_reads_relative)), 
+  input_metadata = metadata_subset("sex_cond_tp", c("Male_untreated_1", "Male_abx_1"), metadata), 
+  output = 'male_abx_1_vs_male_untreated_1_taxa_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0.1,
+  max_significance = 0.25,
+  fixed_effects = c("sex_cond_tp"),
+  reference=c("sex_cond_tp,Male_untreated_1"),
+  standardize = FALSE
+  )
+```
+
+```{r}
+fit_data <- Maaslin2(
+  input_data = as.data.frame(t(combined_reads_relative)), 
+  input_metadata = metadata_subset("sex_cond_tp", c("Female_untreated_1", "Female_abx_1"), metadata), 
+  output = 'female_abx_1_vs_female_untreated_1_taxa_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0.1,
+  max_significance = 0.25,
+  fixed_effects = c("sex_cond_tp"),
+  reference=c("sex_cond_tp,Female_untreated_1"),
+  standardize = FALSE
+  )
+```
+
+# ARG-Taxonomy Coorelation Analysis
+```{r}
+ARG_sample_classes_relative_abundance_wide <- ARG_sample_classes_relative_abundance %>%
+  select(sample_name, defined_drug_class, drug_class_relative_abundance) %>%
+  pivot_wider(names_from = defined_drug_class, 
+              values_from = drug_class_relative_abundance,
+              values_fill = 0)
+TAXON_sample_relative_abundance_wide <- TAXON_sample_relative_abundance %>%
+  select(sample_name, name, taxon_relative_abundance) %>%
+  pivot_wider(names_from = name,
+              values_from = taxon_relative_abundance,
+              values_fill = 0)
+ARGTAXON_combined_relative_abundance_wide <- ARG_sample_classes_relative_abundance_wide %>%
+  inner_join(TAXON_sample_relative_abundance_wide, by = "sample_name")
+```
+
+```{r}
+# Separate taxonomy and ARG columns
+TAXON_cols <- names(TAXON_sample_relative_abundance_wide)[-1]  # exclude sample_name
+ARG_cols <- names(ARG_sample_classes_relative_abundance_wide)[-1]
+```
+
+```{r fig.width=10, fig.height=15}
+library(corrplot)
+
+# Calculate correlations between taxonomy and ARGs
+ARGTAXON_cor_mat <- cor(
+  ARGTAXON_combined_relative_abundance_wide[, TAXON_cols], 
+  ARGTAXON_combined_relative_abundance_wide[, ARG_cols],
+  method = "spearman"  # or "pearson"
+)
+
+
+# corrplot(ARGTAXON_cor_mat,
+#          method = "number")
+library(pheatmap)
+library(ggplotify) ## to convert pheatmap to ggplot2
+ARGTAXON_corrplot_gg <- as.ggplot(pheatmap(ARGTAXON_cor_mat, 
+         color=colorRampPalette(c("navy", "white", "red"))(50)))
+ggsave("ARGTAXON_corrplot.png", plot = ARGTAXON_corrplot_gg)
+
+```
+
+
+

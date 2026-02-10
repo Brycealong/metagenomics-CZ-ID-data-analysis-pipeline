@@ -1,0 +1,160 @@
+---
+title: "functional_profiling_eggnog"
+output: html_document
+date: "2026-01-24"
+---
+
+```{r echo=FALSE}
+library(tidyverse)
+```
+
+
+```{r}
+library(clusterProfiler)
+
+# Load the kegg_category dataset
+data("kegg_category", package = "clusterProfiler")
+```
+```{r}
+annot_path <- "eggnog_results/25_S25_876565_contigs_nh.fasta.emapper.annotations"
+sample_number <- str_split_1(basename(annot_path), "_")[1]
+contig_metadata_path <- list.files("contigs_summary_reports/",
+                              pattern = paste0("^", sample_number, "_*"),
+                              full.names = TRUE)  # adjust pattern as needed
+read_csv(contig_metadata_path)
+coverage_path <- list.files("contigs_summary_todos/",
+                              pattern = paste0("*", sample_number, ".csv"),
+                              full.names = TRUE)
+
+```
+
+```{r}
+read_eggnog_annot <- function(annot_path){
+  # Extract sample name from annotation file path
+  sample_number <- str_split_1(basename(annot_path), "_")[1]
+  
+  # Construct corresponding contig metadata file path
+  contig_metadata_path <- list.files("contigs_summary_reports/",
+                              pattern = paste0("^", sample_number, "_*"),
+                              full.names = TRUE)  # adjust pattern as needed
+  
+  # Construct corresponding coverage file path
+  coverage_path <- list.files("contigs_summary_todos/",
+                              pattern = paste0("*", sample_number, ".csv"),
+                              full.names = TRUE)
+  
+  # Read files
+  annot <- read_tsv(annot_path, comment = "##")
+  contig_metadata <- read_csv(contig_metadata_path)
+  coverage <- read_csv(coverage_path)
+  
+  # Process annotation
+  annot <- annot %>%
+    rename(query = `#query`) %>%
+    mutate(contig_name = str_replace(query, "_\\d+$", "")) # collapse all the contigs
+  
+  # Extract pathway counts
+  pathway_counts <- annot %>%
+    filter(!is.na(KEGG_Pathway), KEGG_Pathway != "-") %>%
+    filter(evalue <= 0.0001) %>%
+    separate_rows(KEGG_Pathway, sep = ",") %>%
+    mutate(KEGG_Pathway = str_trim(KEGG_Pathway)) %>%
+    filter(str_starts(KEGG_Pathway, "map")) %>%
+    count(contig_name, KEGG_Pathway)
+  
+  contig_metadata_filtered <- contig_metadata %>%
+    filter(read_count >= 4) %>%
+    select(contig_name, read_count)
+  
+  kegg_category_mapping <- kegg_category %>%
+    mutate(KEGG_Pathway = paste0("map", id))
+  
+  # Calculate weighted abundances
+  pathway_abun <- coverage %>%
+    select(contig_name, avg) %>%
+    right_join(contig_metadata_filtered, by = "contig_name") %>%
+    left_join(pathway_counts, by = "contig_name") %>%
+    mutate(weighted_avg = n * avg) %>%
+    group_by(KEGG_Pathway) %>%
+    summarise(total = sum(weighted_avg, na.rm = TRUE), .groups = "drop") %>%
+    left_join(kegg_category_mapping, by = "KEGG_Pathway")
+  
+  return(pathway_abun)
+  
+}
+```
+
+
+```{r echo=FALSE}
+annot_files <- list.files(path = "eggnog_results/", recursive = T, pattern = "*.annotations",
+                          full.names = TRUE)
+
+#Create a list of annotations matrices
+annot_reads <- lapply(annot_files, read_eggnog_annot)
+
+# Add sample names
+names(annot_reads) <- sapply(annot_files,
+                       function(x){paste0("S", str_split_1(basename(x),"_")[1])},
+                       USE.NAMES = FALSE)
+
+# Combine into one dataframe
+combined_results <- bind_rows(annot_reads, .id = "sample_name")
+```
+
+```{r}
+write.csv(combined_results, file = "combined_kegg_results.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+```{r}
+annot <- read_tsv("results/test.emapper.annotations", 
+                  comment = "##")     # skip lines starting with ##
+```
+```{r}
+annot <- annot %>%
+  rename(query = `#query`)
+
+annot <- annot %>%
+  mutate(contig_name = str_replace(query, "_\\d+$", ""))
+```
+
+```{r}
+# Extract and count KEGG pathways per contig
+pathway_counts <- annot %>%
+  filter(!is.na(KEGG_Pathway), KEGG_Pathway != "-") %>%
+  filter(evalue <= 0.0001) %>%                        # filter by e value
+  separate_rows(KEGG_Pathway, sep = ",") %>%          # split comma-separated values
+  mutate(KEGG_Pathway = str_trim(KEGG_Pathway)) %>%   # remove whitespace
+  filter(str_starts(KEGG_Pathway, "map")) %>%         # keep only map pathways
+  count(contig_name, KEGG_Pathway) 
+# %>%                     # count occurrences
+#   pivot_wider(names_from = KEGG_Pathway,              # contigs as rows
+#               values_from = n, 
+#               values_fill = 0)                        # fill missing with 0
+
+# View result
+pathway_counts
+```
+
+```{r}
+abun <- read_csv(file = "contig_coverage_summary.csv")
+```
+
+```{r}
+pathway_abun <- abun %>%
+  select(contig_name, avg) %>%
+  right_join(y = pathway_counts) %>%
+  mutate(weighted_avg = n * avg) %>%                 # count × avg
+  group_by(KEGG_Pathway) %>%
+  summarise(total = sum(weighted_avg, na.rm = TRUE))
+
+# View result
+pathway_abun
+```
+
