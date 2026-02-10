@@ -4,6 +4,422 @@ output: html_document
 date: "2026-01-29"
 ---
 
+# PWY Analysis
+```{r echo=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(Maaslin2)
+library(ggrepel)
+```
+
+```{r}
+PWY_combined_kegg <- read_csv("combined_kegg_results.csv")
+# # Calculate how many samples each pathway appears in
+# PWY_pathway_prevalence <- PWY_combined_kegg %>%
+#   group_by(KEGG_Pathway) %>%
+#   summarize(
+#     n_samples = n_distinct(sample_name),
+#     total_samples = n_distinct(PWY_combined_kegg$sample_name)
+#   ) %>%
+#   mutate(prevalence = n_samples / total_samples)
+# 
+# # Filter for pathways with >= 5% prevalence
+# PWY_pathways_to_keep <- PWY_pathway_prevalence %>%
+#   filter(prevalence >= 0.05) %>%
+#   pull(KEGG_Pathway)
+# 
+# # Filter the original data to keep only these pathways
+# PWY_combined_kegg_filtered <- PWY_combined_kegg %>%
+#   filter(KEGG_Pathway %in% PWY_pathways_to_keep)
+
+
+
+
+# PWY_combined_kegg <- PWY_combined_kegg %>%
+#   filter(total > 100)
+# PWY_combined_kegg_filtered[is.na(PWY_combined_kegg_filtered)] <- "unknown"
+# PWY_combined_kegg_filtered
+
+
+PWY_combined_kegg_filtered <- PWY_combined_kegg %>%
+  filter(!is.na(category))
+PWY_combined_kegg_filtered$allTiers <- paste(PWY_combined_kegg_filtered$category, 
+                                             PWY_combined_kegg_filtered$subcategory,
+                                             PWY_combined_kegg_filtered$name,
+                                             sep = ";")
+```
+
+```{r}
+metadata <- read.csv("sample_metadata.csv", header = TRUE)
+# metadata <- metadata %>% column_to_rownames("sample_name")
+head(metadata)
+```
+
+
+
+```{r}
+####PWYs relative abundance####
+
+PWY_sample_relative_abundance <- PWY_combined_kegg_filtered %>%
+  group_by(sample_name) %>%
+  mutate(relative_abundance = total / sum(total)) %>%
+  ungroup()
+
+PWY_sample_relative_abundance_wider <- PWY_sample_relative_abundance %>%
+  select(sample_name, allTiers, relative_abundance) %>%
+  pivot_wider(names_from = allTiers, values_from = relative_abundance)
+
+PWY_sample_relative_abundance_wider <- PWY_sample_relative_abundance_wider %>%
+  column_to_rownames(var = "sample_name")
+
+metadata <- metadata %>%
+  column_to_rownames(var = "sample_name")
+
+```
+
+```{r}
+fit_data <- Maaslin2(
+  input_data = PWY_sample_relative_abundance_wider, 
+  input_metadata = metadata, 
+  output = 'abx_vs_untreated_pwy_output',
+  normalization = "TSS",
+  transform = "NONE",
+  min_prevalence = 0.05,
+  max_significance = 0.25,
+  fixed_effects = c("diseases_and_conditions"),
+  reference=c("diseases_and_conditions,untreated"),
+  standardize = FALSE
+  )
+```
+
+```{r}
+# volcano plot
+#Wrangle the data
+PWY_dexp <- read_tsv("abx_vs_untreated_pwy_output/all_results.tsv")
+
+# Call genes significantly differentially expressed if they have a 
+#p-value less than 0.05 and a logFC greater than or equal to 2.
+PWY_dexp_sigtrnsc <- PWY_dexp |> 
+  mutate(Significant = qval < 0.05) |>
+  arrange(qval)
+
+#extract top 6 genes to use for the labels
+PWY_toppwys <- PWY_dexp_sigtrnsc$feature[c(1:6)]
+```
+
+```{r}
+head(PWY_dexp_sigtrnsc)
+```
+
+```{r}
+ggplot(data=PWY_dexp_sigtrnsc) +
+  geom_point(aes(x = coef, y = -log10(qval), color = Significant,
+                  alpha = Significant)) +
+  scale_color_manual(values = c("black", "#e11f28"))
+```
+
+```{r}
+ggplot(data=PWY_dexp_sigtrnsc) +
+  geom_point(aes(x = coef, y = -log10(qval), color = Significant, 
+                  alpha = Significant)) +
+  scale_color_manual(values = c("black", "#e11f28")) +
+  guides(alpha= "none", 
+         color= guide_legend(title="Significant DE")) +
+       theme_bw() +
+      theme(
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        panel.grid.major = element_line(size = 0.2),
+        panel.grid.minor = element_line(size = 0.1),
+        text = element_text(size = 12),
+        legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)
+      )
+```
+
+
+
+```{r fig.width=10}
+ggplot(data=PWY_dexp_sigtrnsc) +
+  geom_point(aes(x = coef, y = -log10(qval), color = Significant, 
+                  alpha = Significant)) +
+  geom_text_repel(data=PWY_dexp_sigtrnsc %>% 
+                    filter(feature %in% PWY_toppwys), 
+                  aes(x = coef, y = -log10(qval),label=feature),
+                  nudge_y=0.5,hjust=0.5,direction="both",
+                  segment.color="gray")+
+  scale_color_manual(values = c("black", "#e11f28")) +
+  guides(alpha= "none", 
+         color= guide_legend(title="Significant DE")) +
+       theme_bw() +
+      theme(
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        panel.grid.major = element_line(size = 0.2),
+        panel.grid.minor = element_line(size = 0.1),
+        text = element_text(size = 12),
+        legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)
+      )
+ggsave("PWY_volcano_maaslin2.png", width = 10, height = 5, units = "in")
+```
+
+
+
+```{r}
+####Sum Up PWYs within subcategories####
+
+# 1) Summing abundance (dpm)
+PWY_sample_subcategory_abundance <- PWY_combined_kegg_filtered %>%
+  group_by(sample_name, subcategory) %>%
+  summarise(subcategory_total = sum(total, na.rm = TRUE), .groups = "drop") 
+# %>%
+#   mutate(time_point = factor(time_point))
+
+# 2) Relative Abundance
+PWY_sample_subcategory_relative_abundance <- PWY_sample_subcategory_abundance %>%
+  group_by(sample_name) %>%
+  mutate(subcategory_relative_abundance = subcategory_total / sum(subcategory_total)) %>%
+  ungroup()
+
+```
+
+```{r}
+####Sum Up PWYs within categories####
+
+# 1) Summing abundance
+PWY_sample_category_abundance <- PWY_combined_kegg %>%
+  group_by(sample_name, category) %>%
+  summarise(category_total = sum(total, na.rm = TRUE), .groups = "drop") 
+# %>%
+#   mutate(time_point = factor(time_point))
+
+# 2) Relative Abundance
+PWY_sample_category_relative_abundance <- PWY_sample_category_abundance %>%
+  group_by(sample_name) %>%
+  mutate(category_relative_abundance = category_total / sum(category_total)) %>%
+  ungroup()
+
+```
+
+```{r fig.width=20, fig.height=8}
+####Relative Abundance Plot####
+PWY_sample_subcategory_relative_abundance_meta <- PWY_sample_subcategory_relative_abundance %>%
+  left_join(metadata %>%
+              arrange(diseases_and_conditions, time_point, host_sex, replicate) %>%
+              mutate(x = row_number())) %>%
+  mutate(host_sex = case_when(
+    host_sex == "Female" ~ "F",
+    host_sex == "Male" ~ "M"
+  ))
+
+# # Create a named vector for renaming
+# class_labels <- c(
+#   "AGly" = "aminoglycoside",
+#   "Dap"  = "diaminopyrimidine",
+#   "Bla"  = "beta-lactam",
+#   "Flq"  = "fluoroquinolone",
+#   "Gly"  = "glycopeptide",
+#   "Mls"  = "MLS",
+#   "NI"   = "nitroimidazole",
+#   "MLA"  = "mupirocin-like",
+#   "Pep"  = "peptide",
+#   "Phe"  = "phenicol",
+#   "PsA"  = "phosphonic acid",
+#   "Rif"  = "rifamycin",
+#   "Sulf" = "sulfonamide",
+#   "Tet"  = "tetracycline",
+#   "Oth"  = "other"
+# )
+
+# Apply to your data and set factor levels (with "other" first so it's at bottom of stacked bars)
+# sample_classes_relative_abundance_meta <- sample_classes_relative_abundance_meta %>%
+#   mutate(
+#     defined_drug_class_label = class_labels[defined_drug_class],
+#     defined_drug_class_label = factor(
+#       defined_drug_class_label,
+#       levels = c(setdiff(unique(class_labels), "other"), "other")
+#     )
+#   )
+  
+time_spans <- PWY_sample_subcategory_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+sex_spans <- PWY_sample_subcategory_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point, host_sex) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+# # --- Color palette for drug classes ---
+# all_classes <- levels(sample_classes_relative_abundance_meta$defined_drug_class_label)
+# pal <- setNames(hue_pal()(length(all_classes)), all_classes)
+# 
+# # Override specific colors
+# pal["tetracycline"] <- "red3"
+# pal["beta-lactam"] <- "yellow2"
+# pal["aminoglycoside"] <- "blue"
+# pal["MLS"] <- "darkgreen"
+# pal["glycopeptide"] <- "purple4"
+# pal["rifamycin"] <- "orange"
+# pal["other"] <- "grey70"
+
+ggplot(PWY_sample_subcategory_relative_abundance_meta, 
+       aes(x = x, y = subcategory_relative_abundance, fill = subcategory)) +
+  geom_col() +
+  facet_grid(~ diseases_and_conditions, scales = "free_x") +
+  # hide x tick labels but keep the axis line
+  scale_x_continuous(breaks = NULL) +
+  # scale_fill_manual(values = pal) +
+  labs(x = "Age / Sex / Time Point", y = "Relative Abundance", fill = "Drug Class") +
+  theme_classic() +
+  
+  # --- Layer 1: TIME bracket + label ---
+  geom_segment(
+    data = time_spans,
+    aes(x = xmin, xend = xmax, y = -0.03, yend = -0.03),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = time_spans,
+    aes(x = xmid, y = -0.06, label = time_point),
+    inherit.aes = FALSE,
+    size = 3.5
+  ) +
+  
+  # --- Layer 2: SEX bracket + label ---
+  geom_segment(
+    data = sex_spans,
+    aes(x = xmin, xend = xmax, y = -0.09, yend = -0.09),
+    inherit.aes = FALSE,
+    linewidth = 0.6
+  ) +
+  geom_text(
+    data = sex_spans,
+    aes(x = xmid, y = -0.12, label = host_sex),
+    inherit.aes = FALSE,
+    size = 3
+  )
+
+ggsave("PWY_relative_abundance_stacked_by_subcategory.png", width = 20, height = 8, dpi = 600, units = "in")
+
+
+
+
+
+```
+
+```{r fig.width=20, fig.height=8}
+####Relative Abundance Plot####
+PWY_sample_category_relative_abundance_meta <- PWY_sample_category_relative_abundance %>%
+  left_join(metadata %>%
+              arrange(diseases_and_conditions, time_point, host_sex, replicate) %>%
+              mutate(x = row_number())) %>%
+  mutate(host_sex = case_when(
+    host_sex == "Female" ~ "F",
+    host_sex == "Male" ~ "M"
+  ))
+
+
+# Apply to your data and set factor levels (with "other" first so it's at bottom of stacked bars)
+# sample_classes_relative_abundance_meta <- sample_classes_relative_abundance_meta %>%
+#   mutate(
+#     defined_drug_class_label = class_labels[defined_drug_class],
+#     defined_drug_class_label = factor(
+#       defined_drug_class_label,
+#       levels = c(setdiff(unique(class_labels), "other"), "other")
+#     )
+#   )
+  
+time_spans <- PWY_sample_category_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+sex_spans <- PWY_sample_category_relative_abundance_meta %>%
+  group_by(diseases_and_conditions, time_point, host_sex) %>%
+  summarise(
+    xmin = min(x) - 0.2,
+    xmax = max(x) + 0.2,
+    xmid = (min(x) + max(x)) / 2,
+    .groups = "drop"
+  )
+
+# # --- Color palette for drug classes ---
+# all_classes <- levels(sample_classes_relative_abundance_meta$defined_drug_class_label)
+# pal <- setNames(hue_pal()(length(all_classes)), all_classes)
+# 
+# # Override specific colors
+# pal["tetracycline"] <- "red3"
+# pal["beta-lactam"] <- "yellow2"
+# pal["aminoglycoside"] <- "blue"
+# pal["MLS"] <- "darkgreen"
+# pal["glycopeptide"] <- "purple4"
+# pal["rifamycin"] <- "orange"
+# pal["other"] <- "grey70"
+
+ggplot(PWY_sample_category_relative_abundance_meta, 
+       aes(x = x, y = category_relative_abundance, fill = category)) +
+  geom_col() +
+  facet_grid(~ diseases_and_conditions, scales = "free_x") +
+  # hide x tick labels but keep the axis line
+  scale_x_continuous(breaks = NULL) +
+  # scale_fill_manual(values = pal) +
+  labs(x = "Age / Sex / Time Point", y = "Relative Abundance", fill = "Drug Class") +
+  theme_classic() +
+  
+  # --- Layer 1: TIME bracket + label ---
+  geom_segment(
+    data = time_spans,
+    aes(x = xmin, xend = xmax, y = -0.03, yend = -0.03),
+    inherit.aes = FALSE,
+    linewidth = 0.8
+  ) +
+  geom_text(
+    data = time_spans,
+    aes(x = xmid, y = -0.06, label = time_point),
+    inherit.aes = FALSE,
+    size = 3.5
+  ) +
+  
+  # --- Layer 2: SEX bracket + label ---
+  geom_segment(
+    data = sex_spans,
+    aes(x = xmin, xend = xmax, y = -0.09, yend = -0.09),
+    inherit.aes = FALSE,
+    linewidth = 0.6
+  ) +
+  geom_text(
+    data = sex_spans,
+    aes(x = xmid, y = -0.12, label = host_sex),
+    inherit.aes = FALSE,
+    size = 3
+  )
+
+ggsave("PWY_relative_abundance_stacked_by_category.png", width = 10, height = 8, dpi = 600, units = "in")
+
+
+
+
+
+```
+
+
+
 # ARG Analysis
 
 ```{r}
